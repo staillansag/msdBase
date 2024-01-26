@@ -2,10 +2,12 @@
 
 Pour construire une image de base MSR personnalisée, il existe au moins 3 options:
 1.  Image de base containers.softwareag.com + webMethods package manager (wpm)
-2.  En utilisant les scripts de ce repository: https://github.com/SoftwareAG/sag-unattended-installations
-3.  En utilisant l'installateur officiel SAG
+2.  En utilisant l'installateur officiel SAG
+3.  En utilisant les scripts sag-unattended-installations
 
-On utilisera ici l'option #1 qui s'inspire très largement des pratiques mise en oeuvres dans d'autres plateformes de programmation comme Node.js:
+##  Image de base containers.softwareag.com + webMethods package manager (wpm)
+
+L'option #1 s'inspire très largement des pratiques mise en oeuvres dans d'autres plateformes de programmation comme Node.js:
 -   On télécharge un runtime de la plateforme (ici le MSR)
 -   On enrichit ce runtime avec les packages dont on a besoin, en utilisant un gestionnaire de packages (ici wpm)
 
@@ -19,7 +21,7 @@ On ajoute également les drivers nécessaire (par exemple les drivers JDBC ou SA
 
 Cette image de base de développement a également pour vocation de faciliter les patches et les upgrades des produits.  
 
-##  Installation de wpm
+###  Installation de wpm
 
 A partir de la version 11 de webMethods, wpm sera automatiquement inclus dans les images de base des produits.
 wpm est utlisable avec les version antérieures (au moins avec la 10.15), mais il faut l'installer sur les images de base produit.
@@ -35,7 +37,7 @@ ENV PATH=/opt/softwareag/wpm/bin:$PATH
 Voir également cet article sur le Tech forum SAG: https://tech.forums.softwareag.com/t/our-new-delivery-channel-webmethods-package-manager/286873
 
 
-##  Installation des packages webMethods avec wpm
+###  Installation des packages webMethods avec wpm
 
 https://packages.softwareag.com est un registre de packages similaire à https://www.npmjs.com dans le monde Node.js.
 Sa vocation est d'être le canal de distribution préférentiel des packages webMethods.
@@ -61,7 +63,7 @@ RUN /opt/softwareag/wpm/bin/wpm.sh install -ws https://packages.softwareag.com -
 WORKDIR /
 ```
 
-##  Installation des drivers (et autres biliothèques requises)
+###  Installation des drivers (et autres biliothèques requises)
 
 Les autres dépendances peuvent être injectées de diverses manières, il s'agit toujours de recopier des fichiers ou des répertoires dans l'arborescence de l'image en cours de construction.  
 Par exemple pour le driver jdbc Postgres, j'utilise une simple commande curl pour télécharger et copier le driver à l'emplacement souhaité:
@@ -72,10 +74,107 @@ RUN curl -O https://jdbc.postgresql.org/download/postgresql-42.7.1.jar
 WORKDIR /
 ```
 
-##  Commande de build
+###  Commande de build
 
 Il faut passer un argument dans la commande de build docker pour transmettre le token jwt permettant à wpm de se connecter à https://packages.softwareag.com. La commande de build doit donc prendre cette forme:
 
 ```
 docker build --build-arg WPM_TOKEN=<token> -t <nom-image> .
 ```
+
+##  En utilisant l'installer SAG
+
+https://packages.softwareag.com ne contient pas encore tous les packages SAG. Il faut employer cette méthode si les packages dont vous avez besoin ne s'y trouvent pas.
+
+Depuis webMethods 10.11, l'installateur officiel permet de créer des images de base des différents produits.
+C'est documenté ici: https://documentation.softwareag.com/a_installer_and_update_manager/wir10-15/webhelp/wir-webhelp/index.html#page/wir-webhelp%2Fto-console_mode_27.html%23
+
+Dans ce qui suit, installer.bin est l'installateur SAG pour l'OS Linux AMD64, téléchargé depuis Empower et renommé.
+
+### Préparation
+
+La première étape des de sélectionner les produits à installer. La liste des produits est très longue, on peut donc s'aider de cette commande:
+```
+sh installer.bin list artifacts --release 10.15 --username $EMPOWER_USERNAME --password $EMPOWER_PASSWORD --platform LNXAMD64
+```
+
+Quelques exemples de code produit :
+-   MSC: c'est le socle MSR
+-   PIEContainerExternalRDBMS: support des bases de données relationnelles
+-   jdbcAdapter: adaptateur JDBC
+-   wst: Cloudstreams server
+
+Il faut également fonctionner dans un environnement où Docker (ou une solution équivalente) est installé.
+
+### Création de l'image
+
+Voici la commande à exécuter (ici avec les produits MSC,Monitor,PIEContainerExternalRDBMS,wst,hdfs,jdbcAdapter)
+```
+sh installer.bin create container-image --name wm-msr:10.15 --release 10.15 --accept-license --products MSC,Monitor,PIEContainerExternalRDBMS,wst,hdfs,jdbcAdapter --admin-password manage --username $EMPOWER_USERNAME --password $EMPOWER_PASSWORD
+```
+
+Comme le script télécharge les produits sur Empower, l'exécution dure quelques minutes.
+On obtient une image Docker positionnée dans le registre local des images, consultable avec:
+```
+docker images
+```
+
+### Ammélioration de l'image
+
+On peut ensuite supprimer des packages inutiles (par exemple WmWin32, WmAS400), ajouter des drivers, ajuster les autorisations du filesystem pour être compatible avec OpenShift, etc.  
+
+Voici un exemple de build Docker qui utilise un build intermédiaire pour faire toutes ces modifications, et déplace le contenu généré dans une nouvelle image de base.  
+
+```
+# Étape 1 : Utilisez un conteneur intermédiaire pour modifier les permissions
+FROM wm-msr:10.15 as builder
+
+USER sagadmin
+
+COPY ./drivers/postgresql-42.6.0.jar /opt/softwareag/IntegrationServer/packages/WmJDBCAdapter/code/jars/postgresql-42.6.0.jar
+RUN rm -rf /opt/softwareag/IntegrationServer/packages/WmAS400
+RUN rm -rf /opt/softwareag/IntegrationServer/packages/WmConsul
+RUN rm -rf /opt/softwareag/IntegrationServer/packages/WmGRPC
+RUN rm -rf /opt/softwareag/IntegrationServer/packages/WmWin32
+RUN rm -rf /opt/softwareag/IntegrationServer/packages/WmRoot/pub/doc/OnlineHelp
+
+USER root
+
+# Autorisations pour OpenShift
+RUN chgrp -R root /opt/softwareag && chmod -R g=u /opt/softwareag
+
+# On déplace le tout dans une nouvelle image
+FROM registry.access.redhat.com/ubi8/ubi-minimal:latest
+
+ENV JAVA_HOME=/opt/softwareag/jvm/jvm/ \
+    JRE_HOME=/opt/softwareag/jvm/jvm/ \
+    JDK_HOME=/opt/softwareag/jvm/jvm/
+
+RUN microdnf -y update ;\
+    microdnf -y install \
+        procps \
+        shadow-utils \
+        findutils \
+        ;\
+    microdnf clean all ;\
+    rm -rf /var/cache/yum ;\
+    useradd -u 1724 -m -g 0 -d /opt/softwareag sagadmin
+
+RUN chmod 770 /opt/softwareag
+COPY --from=builder /opt/softwareag /opt/softwareag
+
+USER sagadmin
+
+EXPOSE 5555
+EXPOSE 9999
+EXPOSE 5553
+
+ENTRYPOINT "/bin/bash" "-c" "/opt/softwareag/IntegrationServer/bin/startContainer.sh"
+```
+
+##  En utilisant les scripts de sag-unattended-installations
+
+Rendez-vous sur https://github.com/SoftwareAG/sag-unattended-installations
+Ces scripts sont maintenus par PS, ils s'appuient également sur l'installer SAG mais avec une mise en oeuvre différente. Peut-être un peu plus complexe, mais à recommander dès lors qu'on veut des images très optimisées.  
+
+Là également, il faut prévoir une étape supplémentaire pour ajouter les drivers ou modifier les autorisation pour OpenShift (comme pour l'installer SAG.)
