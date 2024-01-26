@@ -1,0 +1,26 @@
+version: 1
+
+switches:
+  # relative path of the target installation of IS (-d)
+  target_installation: 
+
+  # scan branches for versions (-sb)
+  scan_branches: true
+
+  # delete contents of SCM on a successful install, or update (-kr)
+  cleanup: true
+
+# source  repos ( -r repeating switch )
+repositories:
+  wpm:
+    type: wpr
+    location: https://packages.softwareag.com
+    working_dir: .
+
+server:
+  # the path that is used when an IS installation path is not declared
+  # ex. path for Windows: IS: c:/SoftwareAG/IntegrationServer/instances/default 
+  #                      MSR: c:/SoftwareAG/IntegrationServer
+  # ex. path for Unix:    IS: /opt/Softwareag/IntegrationServer/instances/default
+  #                      MSR: /opt/Softwareag/IntegrationServer/
+  path: 
